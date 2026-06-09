@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -380,6 +381,7 @@ class AgentLoopConfig:
 
     instructions: str = DEFAULT_INSTRUCTIONS
     max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS
+    timing_enabled: bool = False
 
 
 class MinimalCliAgent:
@@ -393,12 +395,14 @@ class MinimalCliAgent:
         config: AgentLoopConfig | None = None,
         session_id: str | None = None,
         skill_texts: Sequence[str] = (),
+        ralio_agent_id: str | None = None,
     ) -> None:
         self.model = model
         self.cli = cli
         self.config = config or AgentLoopConfig()
         self.session_id = session_id or str(uuid.uuid4())
         self.skill_texts = tuple(skill_texts)
+        self.ralio_agent_id = ralio_agent_id
         self.messages: list[dict[str, Any]] = []
 
     def reset(self) -> None:
@@ -411,21 +415,25 @@ class MinimalCliAgent:
         if not user_request.strip():
             raise AgentError("Empty user request.")
 
+        turn_started_at = time.perf_counter()
         self.messages.append({"role": "user", "content": user_request})
         tools = [cli_command_tool_schema(self.cli.allowed_commands)]
 
         for _round_num in range(self.config.max_tool_rounds):
+            model_started_at = time.perf_counter()
             turn = self.model.respond(
                 instructions=self._instructions(),
                 messages=self.messages,
                 tools=tools,
             )
+            self._log_timing("model", model_started_at)
 
             if turn.text:
                 self.messages.append({"role": "assistant", "content": turn.text})
 
             if not turn.tool_calls:
                 if turn.text:
+                    self._log_timing("turn", turn_started_at)
                     return turn.text
                 raise ModelError("Model returned no text and no tool calls.")
 
@@ -466,6 +474,13 @@ class MinimalCliAgent:
         if self.skill_texts:
             skill_block = "\n\n---\n\n".join(self.skill_texts)
             parts.append("Supplied skill instructions:\n\n" + skill_block)
+        if self.ralio_agent_id:
+            parts.append(
+                "Configured Ralio agent id: "
+                f"{self.ralio_agent_id}\n"
+                "When using `ralio chat`, pass this value with `--agent` or `-a`. "
+                "Do not run `ralio agents list` solely to discover an agent id."
+            )
         return "\n\n".join(parts)
 
     def _execute_tool_call(self, call: ToolCall) -> dict[str, Any]:
@@ -484,9 +499,11 @@ class MinimalCliAgent:
             return {"error": "run_cli_command `timeout_seconds` must be an integer."}
 
         try:
+            cli_started_at = time.perf_counter()
             result = self.cli.run(command, timeout_seconds=timeout_seconds)
         except CommandError as exc:
             return {"error": str(exc)}
+        self._log_timing(f"cli {' '.join(result.command)}", cli_started_at)
 
         return {
             "command": result.command,
@@ -496,6 +513,13 @@ class MinimalCliAgent:
             "stdout_truncated": result.stdout_truncated,
             "stderr_truncated": result.stderr_truncated,
         }
+
+    def _log_timing(self, label: str, started_at: float) -> None:
+        """Write optional timing diagnostics to stderr."""
+        if not self.config.timing_enabled:
+            return
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        print(f"[timing] {label}: {elapsed_ms:.0f}ms", file=sys.stderr)
 
 
 def build_agent_from_args(args: argparse.Namespace) -> MinimalCliAgent:
@@ -521,10 +545,13 @@ def build_agent_from_args(args: argparse.Namespace) -> MinimalCliAgent:
         default=DEFAULT_MAX_OUTPUT_CHARS,
     )
     allowed_commands = _allowed_commands_from_args(args)
+    timing_enabled = _env_flag("AGENT_TIMING")
+    skill_started_at = time.perf_counter()
     skill_texts = _load_skills(
         skill_files=args.skill_file or [],
         skill_urls=_skill_urls_from_args(args, allowed_commands),
     )
+    _log_build_timing("skill_load", skill_started_at, timing_enabled)
 
     cli = CliCommandTool(
         allowed_commands=allowed_commands,
@@ -534,9 +561,13 @@ def build_agent_from_args(args: argparse.Namespace) -> MinimalCliAgent:
     return MinimalCliAgent(
         model=OpenAIResponsesModelClient(model_name),
         cli=cli,
-        config=AgentLoopConfig(max_tool_rounds=max_tool_rounds),
+        config=AgentLoopConfig(
+            max_tool_rounds=max_tool_rounds,
+            timing_enabled=timing_enabled,
+        ),
         session_id=args.session_id,
         skill_texts=skill_texts,
+        ralio_agent_id=_ralio_agent_id_from_env(allowed_commands),
     )
 
 
@@ -584,6 +615,27 @@ def _allowed_commands_from_args(args: argparse.Namespace) -> tuple[str, ...]:
         if stripped:
             commands.append(stripped)
     return tuple(dict.fromkeys(commands))
+
+
+def _ralio_agent_id_from_env(allowed_commands: tuple[str, ...]) -> str | None:
+    """Return configured Ralio agent id when the ralio command is allowed."""
+    if "ralio" not in allowed_commands:
+        return None
+    agent_id = os.getenv("RALIO_AGENT_ID", "").strip()
+    return agent_id or None
+
+
+def _env_flag(key: str) -> bool:
+    """Return true for common truthy env flag values."""
+    return os.getenv(key, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _log_build_timing(label: str, started_at: float, enabled: bool) -> None:
+    """Write optional build timing diagnostics to stderr."""
+    if not enabled:
+        return
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    print(f"[timing] {label}: {elapsed_ms:.0f}ms", file=sys.stderr)
 
 
 def _skill_urls_from_args(

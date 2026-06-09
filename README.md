@@ -75,6 +75,13 @@ cp .env.example .env
 source .env
 ```
 
+If you already know the target Ralio Agent id, set `RALIO_AGENT_ID` in `.env`.
+The client agent will pass that id to `ralio chat` instead of spending an extra
+turn discovering agents.
+
+To diagnose slow turns, set `AGENT_TIMING=1` in `.env`. Timing logs are written
+to stderr and include model, CLI, skill-load, and total turn timings.
+
 ## Run Interactively
 
 Run the agent and keep it open until you close it:
@@ -130,6 +137,10 @@ Ralio instructions.
   `https://console.ralio.co/skill.md`, unless `--no-default-ralio-skill` is set.
 - `--session-id` exposes a stable generic id that skills can use for CLI
   conversation, session, or correlation ids.
+- `RALIO_AGENT_ID` tells the model to use a known Ralio Agent id directly,
+  avoiding discovery commands when the target agent is already known.
+- `AGENT_TIMING=1` writes model, CLI, skill-load, and total turn timings to
+  stderr.
 
 For a high-level walkthrough of agent-to-agent communication and how this
 sample connects to Ralio through the CLI, see

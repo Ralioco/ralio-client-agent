@@ -310,6 +310,55 @@ def test_agent_keeps_history_between_interactive_turns() -> None:
     ]
 
 
+def test_agent_instructions_include_configured_ralio_agent_id() -> None:
+    model = ScriptedModel([ModelTurn(text="Done.")])
+    agent = MinimalCliAgent(
+        model=model,
+        cli=CliCommandTool(allowed_commands=("ralio",), runner=FakeRunner([])),
+        ralio_agent_id="agt_123",
+    )
+
+    assert agent.run("Check status.") == "Done."
+
+    instructions = model.calls[0]["instructions"]
+    assert "Configured Ralio agent id: agt_123" in instructions
+    assert "Do not run `ralio agents list` solely to discover an agent id." in instructions
+
+
+def test_agent_logs_timing_when_enabled(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="run_cli_command",
+                        arguments={"command": ["demo-cli", "status"]},
+                    ),
+                )
+            ),
+            ModelTurn(text="Done."),
+        ]
+    )
+    agent = MinimalCliAgent(
+        model=model,
+        cli=CliCommandTool(
+            allowed_commands=("demo-cli",),
+            runner=FakeRunner([_completed({"status": "ok"})]),
+        ),
+        config=AgentLoopConfig(max_tool_rounds=2, timing_enabled=True),
+    )
+
+    assert agent.run("Check status.") == "Done."
+
+    stderr = capsys.readouterr().err
+    assert "[timing] model:" in stderr
+    assert "[timing] cli demo-cli status:" in stderr
+    assert "[timing] turn:" in stderr
+
+
 def test_interactive_new_command_resets_history_and_session() -> None:
     model = ScriptedModel(
         [
@@ -354,6 +403,39 @@ def test_build_agent_uses_default_openai_model(
     assert isinstance(agent.model, OpenAIResponsesModelClient)
     assert agent.model.model == DEFAULT_OPENAI_MODEL
     assert DEFAULT_OPENAI_MODEL == "gpt-5.4"
+
+
+def test_build_agent_uses_ralio_agent_id_when_ralio_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RALIO_AGENT_ID", "agt_123")
+    args = parse_args(["--allow-command", "ralio", "--no-default-ralio-skill"])
+
+    agent = build_agent_from_args(args)
+
+    assert agent.ralio_agent_id == "agt_123"
+
+
+def test_build_agent_ignores_ralio_agent_id_for_other_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RALIO_AGENT_ID", "agt_123")
+    args = parse_args(["--allow-command", "demo-cli"])
+
+    agent = build_agent_from_args(args)
+
+    assert agent.ralio_agent_id is None
+
+
+def test_build_agent_enables_timing_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_TIMING", "1")
+    args = parse_args(["--allow-command", "demo-cli"])
+
+    agent = build_agent_from_args(args)
+
+    assert agent.config.timing_enabled is True
 
 
 def test_build_agent_loads_default_ralio_skill_url(
