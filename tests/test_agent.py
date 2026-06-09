@@ -252,6 +252,75 @@ def test_agent_loop_executes_generic_cli_tool_then_returns_final_text() -> None:
     assert json.loads(output["stdout"])["accounts"][0]["name"] == "Main"
 
 
+def test_agent_surfaces_important_cli_notice_when_model_omits_it() -> None:
+    notice = "Approval required: spend limit (106.0 GBP)."
+    runner = FakeRunner([_completed("", stderr=notice)])
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="run_cli_command",
+                        arguments={"command": ["demo-cli", "pay"]},
+                    ),
+                )
+            ),
+            ModelTurn(text="The payment request is being processed."),
+        ]
+    )
+    agent = MinimalCliAgent(
+        model=model,
+        cli=CliCommandTool(
+            allowed_commands=("demo-cli",),
+            runner=runner,
+        ),
+        config=AgentLoopConfig(max_tool_rounds=2),
+    )
+
+    reply = agent.run("Make a payment.")
+
+    assert reply == (
+        "The payment request is being processed.\n\n"
+        "Important: Approval required: spend limit (106.0 GBP)."
+    )
+    output = json.loads(model.calls[1]["messages"][-1]["output"])
+    assert output["important_notices"] == [notice]
+
+
+def test_agent_does_not_duplicate_important_cli_notice_in_final_reply() -> None:
+    notice = "Approval required: spend limit (106.0 GBP)."
+    runner = FakeRunner([_completed({"message": notice})])
+    model = ScriptedModel(
+        [
+            ModelTurn(
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        name="run_cli_command",
+                        arguments={"command": ["demo-cli", "pay"]},
+                    ),
+                )
+            ),
+            ModelTurn(text=f"{notice} Please approve it before retrying."),
+        ]
+    )
+    agent = MinimalCliAgent(
+        model=model,
+        cli=CliCommandTool(
+            allowed_commands=("demo-cli",),
+            runner=runner,
+        ),
+        config=AgentLoopConfig(max_tool_rounds=2),
+    )
+
+    reply = agent.run("Make a payment.")
+
+    assert reply == f"{notice} Please approve it before retrying."
+    output = json.loads(model.calls[1]["messages"][-1]["output"])
+    assert output["important_notices"] == [notice]
+
+
 def test_agent_returns_command_errors_to_model_for_recovery() -> None:
     model = ScriptedModel(
         [

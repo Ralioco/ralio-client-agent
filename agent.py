@@ -41,8 +41,21 @@ DEFAULT_MAX_TOOL_ROUNDS = 8
 DEFAULT_RALIO_SKILL_URL = "https://console.ralio.co/skill.md"
 DEFAULT_SKILL_URL_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_SKILL_CHARS = 200_000
+MAX_IMPORTANT_NOTICES = 5
+MAX_IMPORTANT_NOTICE_CHARS = 600
 MAX_COMMAND_TIMEOUT_SECONDS = 600
 TRUNCATION_MARKER = "\n[output truncated]"
+IMPORTANT_NOTICE_MARKERS = (
+    "approval required",
+    "requires approval",
+    "waiting for approval",
+    "pending approval",
+    "approval denied",
+    "approval granted",
+    "approval url",
+    "approval link",
+    "spend limit",
+)
 COMMAND_ENV_ALLOWLIST = (
     "HOME",
     "LANG",
@@ -234,6 +247,71 @@ def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     return text[: max_chars - marker_length] + TRUNCATION_MARKER, True
 
 
+def _important_notice_payload(stdout: str, stderr: str) -> dict[str, list[str]]:
+    """Return model-visible notices that must be surfaced to the user."""
+    notices = _extract_important_notices(stdout, stderr)
+    return {"important_notices": notices} if notices else {}
+
+
+def _extract_important_notices(*texts: str) -> list[str]:
+    """Extract approval/pending/refusal notices from plain text or JSON output."""
+    notices: list[str] = []
+    for text in texts:
+        for candidate in _notice_candidates(text):
+            notice = " ".join(candidate.strip().split())
+            if not notice or len(notice) > MAX_IMPORTANT_NOTICE_CHARS:
+                continue
+            if not _is_important_notice(notice):
+                continue
+            if notice not in notices:
+                notices.append(notice)
+            if len(notices) >= MAX_IMPORTANT_NOTICES:
+                return notices
+    return notices
+
+
+def _notice_candidates(text: str) -> list[str]:
+    """Collect candidate notice strings from text and JSON string fields."""
+    candidates = list(text.splitlines())
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return candidates
+    json_strings = _json_strings(parsed)
+    return json_strings or candidates
+
+
+def _json_strings(value: Any) -> list[str]:
+    """Return all string values nested in a JSON-like object."""
+    if isinstance(value, str):
+        return value.splitlines()
+    if isinstance(value, list):
+        strings: list[str] = []
+        for item in value:
+            strings.extend(_json_strings(item))
+        return strings
+    if isinstance(value, dict):
+        strings = []
+        for item in value.values():
+            strings.extend(_json_strings(item))
+        return strings
+    return []
+
+
+def _is_important_notice(text: str) -> bool:
+    """Return true when text looks like a status the user must see."""
+    lower_text = text.lower()
+    return any(marker in lower_text for marker in IMPORTANT_NOTICE_MARKERS)
+
+
+def _append_unsurfaced_important_notices(text: str, notices: Sequence[str]) -> str:
+    """Append critical tool notices the model did not already surface."""
+    missing = [notice for notice in notices if notice.lower() not in text.lower()]
+    if not missing:
+        return text
+    return text.rstrip() + "\n\nImportant: " + " ".join(missing)
+
+
 def _command_environment() -> dict[str, str]:
     """Return the minimal env needed by CLI commands, without broad secrets."""
     return {
@@ -368,6 +446,10 @@ write shell syntax.
 If a command returns a nonzero exit code, read stdout and stderr, then either
 recover with another command or explain the concrete failure. If the required
 command or skill is not available, say exactly what is missing.
+
+If tool output includes `important_notices`, surface every notice clearly in the
+final answer. Do not say an action completed when an important notice says it is
+waiting for approval, requires approval, was denied, or was refused.
 """
 
 
@@ -411,6 +493,7 @@ class MinimalCliAgent:
         if not user_request.strip():
             raise AgentError("Empty user request.")
 
+        important_notices: list[str] = []
         self.messages.append({"role": "user", "content": user_request})
         tools = [cli_command_tool_schema(self.cli.allowed_commands)]
 
@@ -426,7 +509,10 @@ class MinimalCliAgent:
 
             if not turn.tool_calls:
                 if turn.text:
-                    return turn.text
+                    return _append_unsurfaced_important_notices(
+                        turn.text,
+                        important_notices,
+                    )
                 raise ModelError("Model returned no text and no tool calls.")
 
             for call in turn.tool_calls:
@@ -439,6 +525,11 @@ class MinimalCliAgent:
                     }
                 )
                 output = self._execute_tool_call(call)
+                important_notices.extend(
+                    notice
+                    for notice in output.get("important_notices", [])
+                    if isinstance(notice, str) and notice not in important_notices
+                )
                 self.messages.append(
                     {
                         "type": "function_call_output",
@@ -495,6 +586,7 @@ class MinimalCliAgent:
             "stderr": result.stderr,
             "stdout_truncated": result.stdout_truncated,
             "stderr_truncated": result.stderr_truncated,
+            **_important_notice_payload(result.stdout, result.stderr),
         }
 
 
