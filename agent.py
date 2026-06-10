@@ -8,11 +8,13 @@ behavior is supplied as external instructions or skill sources.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +46,8 @@ DEFAULT_MAX_TOOL_ROUNDS = 8
 DEFAULT_RALIO_SKILL_URL = "https://console.ralio.co/skill.md"
 DEFAULT_SKILL_URL_TIMEOUT_SECONDS = 10
 DEFAULT_MAX_SKILL_CHARS = 200_000
+DEFAULT_SKILL_CACHE_TTL_SECONDS = 86400
+SKILL_CACHE_DIR = Path.home() / ".cache" / "ralio-client-agent" / "skills"
 MAX_COMMAND_TIMEOUT_SECONDS = 600
 TRUNCATION_MARKER = "\n[output truncated]"
 APPROVAL_PROGRESS_MESSAGE = (
@@ -758,10 +762,23 @@ def _load_skills(
 
 
 def _load_skill_url(raw_url: str) -> str:
-    """Fetch one HTTPS skill URL to append to the model instructions."""
+    """Fetch one HTTPS skill URL, with a simple file-based cache and TTL."""
     parsed = urllib.parse.urlparse(raw_url)
     if parsed.scheme != "https" or not parsed.netloc:
         raise AgentError(f"Skill URL must be an HTTPS URL: {raw_url!r}")
+
+    cache_key = hashlib.sha256(raw_url.encode("utf-8")).hexdigest()
+    cache_path = SKILL_CACHE_DIR / f"{cache_key}.md"
+    metadata_path = SKILL_CACHE_DIR / f"{cache_key}.json"
+
+    try:
+        if metadata_path.exists() and cache_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            cached_at = metadata.get("cached_at", 0)
+            if (time.time() - cached_at) < DEFAULT_SKILL_CACHE_TTL_SECONDS:
+                return f"# Skill URL: {raw_url}\n\n{cache_path.read_text(encoding='utf-8').strip()}"
+    except (OSError, json.JSONDecodeError):
+        pass
 
     try:
         with urllib.request.urlopen(  # noqa: S310 - user/default HTTPS skill URL.
@@ -786,6 +803,14 @@ def _load_skill_url(raw_url: str) -> str:
         text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise AgentError(f"Skill URL {raw_url!r} did not return UTF-8 text.") from exc
+
+    try:
+        SKILL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(text, encoding="utf-8")
+        metadata = {"cached_at": time.time(), "url": raw_url}
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    except OSError:
+        pass
 
     return f"# Skill URL: {raw_url}\n\n{text.strip()}"
 
