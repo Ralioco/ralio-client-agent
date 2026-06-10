@@ -4,6 +4,7 @@ import json
 import subprocess
 from collections.abc import Mapping
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -481,6 +482,7 @@ def test_build_agent_loads_default_ralio_skill_url(
         return FakeSkillUrlResponse("# Hosted Ralio skill")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("agent.SKILL_CACHE_DIR", Path("/nonexistent/cache/dir"))
     args = parse_args(["--allow-command", "ralio"])
 
     agent = build_agent_from_args(args)
@@ -515,6 +517,7 @@ def test_build_agent_loads_explicit_skill_url(
         return FakeSkillUrlResponse("Use demo-cli carefully.")
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("agent.SKILL_CACHE_DIR", Path("/nonexistent/cache/dir"))
     args = parse_args(
         [
             "--allow-command",
