@@ -25,6 +25,7 @@ from agent import (
     THINKING_STARTED,
     ToolCall,
     build_agent_from_args,
+    main,
     parse_args,
     _truncate_text,
     _run_interactive,
@@ -586,3 +587,28 @@ def test_openai_client_missing_api_key_raises_model_error(
 
     with pytest.raises(ModelError, match="api_key"):
         client._get_client()
+
+
+def test_main_calls_load_dotenv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[Any, ...]] = []
+
+    def fake_load_dotenv(*args: Any, **kwargs: Any) -> bool:
+        calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr("agent.load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(
+        "agent.build_agent_from_args",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        "agent._initial_instruction_from_args",
+        lambda _args: None,
+    )
+
+    main(["--allow-command", "demo-cli"])
+
+    assert len(calls) == 1
+    assert calls[0] == ((), {})

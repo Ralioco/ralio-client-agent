@@ -72,7 +72,6 @@ Configure local environment variables:
 ```bash
 cp .env.example .env
 # Edit .env and set OPENAI_API_KEY.
-source .env
 ```
 
 ## Run Interactively
