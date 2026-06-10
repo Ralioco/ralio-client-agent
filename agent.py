@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 
+from dotenv import load_dotenv
+
 
 class AgentError(Exception):
     """Base exception for the minimal agent."""
@@ -783,6 +785,7 @@ def _run_interactive(
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
+    load_dotenv()
     args = parse_args(argv or sys.argv[1:])
     should_open_repl = not args.once and sys.stdin.isatty()
     try:

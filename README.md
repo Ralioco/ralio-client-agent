@@ -72,8 +72,9 @@ Configure local environment variables:
 ```bash
 cp .env.example .env
 # Edit .env and set OPENAI_API_KEY.
-source .env
 ```
+
+The agent automatically loads `.env` on startup, so no `source .env` is needed.
 
 ## Run Interactively
 

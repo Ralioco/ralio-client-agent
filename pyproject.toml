@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "openai>=1.30",
+    "python-dotenv>=1.0",
 ]
 
 [project.urls]
