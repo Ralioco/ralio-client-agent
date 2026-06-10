@@ -74,8 +74,6 @@ cp .env.example .env
 # Edit .env and set OPENAI_API_KEY.
 ```
 
-The agent automatically loads `.env` on startup, so no `source .env` is needed.
-
 ## Run Interactively
 
 Run the agent and keep it open until you close it:
