@@ -47,3 +47,8 @@ pythonpath = [
 testpaths = [
     "tests",
 ]
+
+[tool.uv]
+constraint-dependencies = [
+    "anyio>=4.14.2",
+]
